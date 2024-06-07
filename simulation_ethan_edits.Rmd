@@ -1,0 +1,164 @@
+---
+title: "simulation"
+author: "Hansen Zhang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(glmnet)
+library(tidyverse)
+library(tibble)
+```
+
+```{r}
+p = 50
+n = 200 #number of observations
+beta = matrix(c(2, -2, -3, 3, 0.5, -0.5, rep(0, p - 6)), ncol = 1 )
+num_simulations = 1000
+```
+
+```{r selection}
+set.seed(1)
+X = matrix( rnorm(n * p, mean = 0, sd = 1), nrow = n, ncol = p )
+#calculate our observed outcomes
+Y_mean = X %*% beta
+eps = 0.5
+#-----------------------------------------------------------------------------------
+
+coverage_true_beta_full = numeric(p)
+times_selected_full = numeric(p)
+
+coverage_true_beta_thin = numeric(p) 
+ci_length_thin = numeric(p)
+times_selected_thin = numeric(p)
+
+coverage_true_beta_split = numeric(p)
+ci_length_split = numeric(p)
+times_selected_split = numeric(p)
+
+for (i in 1:num_simulations) {
+  Y = rnorm(n, mean = Y_mean, 1)
+#-----------------------------------------------------------------------------------
+  #full
+  
+  #fit the linear model
+  fit_lm <- lm(Y ~ X + 0)
+
+  best_lambda <- 0.05
+  lasso.full <- glmnet(X, Y, intercept = FALSE, alpha = 1, lambda = best_lambda)
+  lasso.full.coef <- as.vector(coef(lasso.full)[-1])
+  selected_indices_full <- (lasso.full.coef != 0)
+  S_full <- which(selected_indices_full)
+  
+  #extract MLE estimated coefficients "beta"
+  beta_hat_full <- fit_lm$coefficients
+  
+  # Variances
+  beta_hat_full_var <- diag(vcov(fit_lm))
+  
+  for (s_index in 1:length(S_full)) {
+    s <- S_full[s_index]
+
+    ci_ub <- beta_hat_full[s] + 1.96 * sqrt(beta_hat_full_var)[s]
+    ci_lb <- beta_hat_full[s] - 1.96 * sqrt(beta_hat_full_var)[s]
+
+    coverage_true_beta_full[s] = coverage_true_beta_full[s] + ((ci_lb <= beta[s]) & (beta[s] <= ci_ub))
+    times_selected_full[s] = times_selected_full[s] + 1
+  }
+  
+#-----------------------------------------------------------------------------------  
+  #thin
+  Y_train_thin = rnorm(n, eps * Y, sqrt( eps * (1 - eps)))
+  Y_test_thin = Y - Y_train_thin
+  
+  best_lambda <- 0.05
+  lasso.mod <- glmnet(X, Y_train_thin, intercept = FALSE, alpha = 1, lambda = best_lambda)
+  lasso.coef <- as.vector(coef(lasso.mod)[-1])
+  
+  #create a vector w/ the indices of the selected variables
+  selected_indices <- (lasso.coef != 0)
+  X_selected <- X[, selected_indices]
+  S <- which(selected_indices)
+  
+  inference_model_thinning <- lm(Y_test_thin ~ X + 0)
+  beta_hat_thin <- coef(inference_model_thinning)
+  beta_hat_thin_var <- diag(vcov(inference_model_thinning))
+  
+  beta_target_of_inference_thin <- (1 - eps) * beta
+  
+  # Confidence intervals
+  for (s_index in 1:length(S)) {
+    s <- S[s_index]
+
+    ci_ub <- beta_hat_thin[s] + 1.96 * sqrt(beta_hat_thin_var)[s]
+    ci_lb <- beta_hat_thin[s] - 1.96 * sqrt(beta_hat_thin_var)[s]
+    
+    coverage_true_beta_thin[s] = coverage_true_beta_thin[s] + ((ci_lb <= beta_target_of_inference_thin[s]) & (beta_target_of_inference_thin[s] <= ci_ub))
+    
+    ci_length_thin[s] = ci_length_thin[s] + (1-eps)^(-1) * (ci_ub - ci_lb)
+    times_selected_thin[s] = times_selected_thin[s] + 1
+  }
+#--------------------------------------------------------------------------------------
+  #split
+  indices = sample(1:n, n/2)
+  Y_train_split = Y[indices]
+  X_train_split = X[indices,]
+  Y_test_split = Y[-indices]
+  X_test_split = X[-indices,]
+  
+  best_lambda_2 <- 0.05
+  lasso.mod_2 <- glmnet(X_train_split, intercept = FALSE, Y_train_split, alpha = 1, lambda = best_lambda_2)
+  lasso.coef_2 <- as.vector(coef(lasso.mod_2)[-1])
+  
+  #create a vector w/ the indices of the selected variables
+  selected_indices_2 <- lasso.coef_2 != 0
+  X_selected_2 <- X[, selected_indices_2]
+  I <- which(selected_indices_2)
+  
+  inference_model_splitting <- lm(Y_test_split ~ X_test_split + 0)
+  beta_hat_split <- coef(inference_model_splitting)
+  beta_hat_split_var <- diag(vcov(inference_model_splitting))
+  
+  # Confidence intervals
+  for (i_index in 1:length(I)) {
+    i <- I[i_index]
+  
+    ci_ub <- beta_hat_split[i] + 1.96 * sqrt(beta_hat_split_var)[i]
+    ci_lb <- beta_hat_split[i] - 1.96 * sqrt(beta_hat_split_var)[i]
+  
+    coverage_true_beta_split[i] = coverage_true_beta_split[i] + ((ci_lb <= beta[i]) & (beta[i] <= ci_ub))
+    
+    ci_length_split[i] = ci_length_split[i] + (ci_ub - ci_lb)
+    
+    times_selected_split[i] = times_selected_split[i] + 1
+  }
+}
+
+coverage_rate_full = coverage_true_beta_full / times_selected_full
+coverage_rate_thin = coverage_true_beta_thin / times_selected_thin
+coverage_rate_split = coverage_true_beta_split / times_selected_split
+
+length_thin = ci_length_thin / times_selected_thin
+length_split = ci_length_split / times_selected_split
+
+coverage_mat <- matrix(NA, nrow = 3, ncol = p)
+rownames(coverage_mat) <- c("Full", "Thinning", "Splitting")
+
+coverage_mat[1, ] <- coverage_rate_full
+coverage_mat[2, ] <- coverage_rate_thin
+coverage_mat[3, ] <- coverage_rate_split
+
+length_mat <- matrix(NA, nrow = 2, ncol = p)
+rownames(length_mat) <- c("Thinning", "Splitting")
+
+length_mat[1, ] <- length_thin
+length_mat[2, ] <- length_split
+
+coverage_mat
+length_mat
+
+apply(coverage_mat, MARGIN = 1, mean)
+apply(length_mat, MARGIN = 1, mean)
+```
