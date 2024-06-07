@@ -1,0 +1,83 @@
+---
+title: "data_thinning_v2"
+author: "Hansen Zhang"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(glmnet)
+library(ISLR2)
+library(tidyverse)
+```
+
+```{r}
+# Create y and x
+Hitters = na.omit(Hitters) #data frame
+x <- model.matrix(Salary ~ ., Hitters)[, -1] #all variables except Salary
+y <- log(Hitters$Salary) #Salary
+n <- nrow(x) 
+```
+
+```{r}
+# Before we do anything, we need to know sigma^2
+sigma2_estimate <- mean(lm(y ~ x)$residuals^2)
+
+# Now I want to separate the information into y_train and y_test,
+# similar to what we do with data splitting.
+eps <- 0.5
+
+# Simulate Y_tr conditional on the observed y
+y_train <- rnorm(n = n, mean = eps * y, sd = sqrt(eps * (1-eps) * sigma2_estimate))
+y_test <- y - y_train
+```
+
+```{r}
+# Right here, I should be using y_train to select coefficients for my linear model
+# in the same way that you were using the y_train split part of your data from
+# before to select variables in the linear model
+set.seed(1)
+
+grid <- 10^seq(10, -2, length = 100)
+
+lasso.mod <- glmnet(x, y_train, alpha = 1, lambda = grid)
+
+cv.out <- cv.glmnet(x, y_train, alpha = 1, lambda = grid)
+
+bestlam <- cv.out$lambda.min
+
+
+out <- glmnet(x, y, alpha = 1)
+lasso.coef <- predict(out, type = "coefficients",
+                      s = bestlam)[1:20, ]
+lasso.coef
+
+selected_indices <- (lasso.coef != 0)[2:length(lasso.coef)]
+x_selected <- x[, selected_indices]
+colnames(x_selected)
+
+fit_lm <- lm(y ~ x_selected)
+summary(fit_lm)
+```
+
+```{r}
+# At this point, we have selected variables
+summary(cv.out$glmnet.fit)
+
+lasso.pred <- predict(lasso.mod, s = bestlam,
+                      newx = x)
+mean((lasso.pred - y_test)^2)
+
+# Now that I have y_test, I can fit an appropriate linear model
+y_test_scaled <- y_test / (1 - eps)
+
+# RIGHT HERE: I Should be using only the selected variables from my step (**)
+test_lm <- lm(y_test_scaled ~ x_selected)
+
+# Do inference
+summary(test_lm)
+```
+
+
